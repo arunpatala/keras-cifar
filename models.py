@@ -3,7 +3,7 @@ from __future__ import print_function
 import numpy as np
 import warnings
 
-from keras.layers import merge, Input
+from keras.layers import merge, Input, Lambda
 from keras.layers import Dense, Activation, Flatten
 from keras.layers import Convolution2D, MaxPooling2D, ZeroPadding2D, AveragePooling2D
 from keras.layers import BatchNormalization
@@ -15,6 +15,7 @@ from keras.utils.data_utils import get_file
 #from imagenet_utils import decode_predictions, preprocess_input
 
 def conv_bn_relu(filter_size, kernel_size=3, bn=True, relu=True, strides=(1,1), border_mode='same'):
+    name = str(filter_size)+":"+str(kernel_size)+"x"+str(kernel_size)
     def tmp(input_tensor): 
         x = Convolution2D(filter_size, kernel_size, kernel_size, border_mode=border_mode, subsample=strides)(input_tensor)
         if(bn): x = BatchNormalization()(x)
@@ -60,22 +61,30 @@ def res(filters, kernel_size=3, strides=(1,1), branch = 1,
             return x
     return tmp
 
+def asum(x1,x2):
+    def mul(xa):
+        return xa[0] * xa[1]
+    def mul_shape(xa_shape):
+        return xa_shape[0]
+    alpha = Lambda(lambda x:K.random_uniform((K.shape(x)[0],1,1,1), 0, 1))(x1)
+    xa1 = merge([x1,alpha], mode=mul, output_shape=mul_shape)
+    xa2 = merge([x2,alpha], mode=mul, output_shape=mul_shape)
+    xa12 = merge([xa1,xa2], mode='sum')
+    return xa12
 
 def shakeres(filters, kernel_size=3, strides=(1,1), branch = 2,
         conv_in_shortcut=False, conv=conv_bn_relu):
+    assert(branch==2)
     def tmp(input_tensor):
             nb_filter = filters[0]
             x1 = conv(nb_filter, kernel_size, strides=strides)(input_tensor)
             x1 = conv(nb_filter, kernel_size, relu=False)(x1)
             x2 = conv(nb_filter, kernel_size, strides=strides)(input_tensor)
             x2 = conv(nb_filter, kernel_size, relu=False)(x2)
-            alpha = K.random_uniform(K.shape(x1),0,1)
-            y1 = (Lambda(lambda x:x*alpha ))(x1)
-            y2 = (Lambda(lambda x:x*(1-alpha)))(x2)
-            y = merge([y1,y2], mode='sum')
+            #alpha = K.random_uniform(K.shape(x1),0,1)
             if(conv_in_shortcut): 
                 input_tensor=conv(nb_filter, 1, strides=strides, relu=False)(input_tensor)
-            x = merge([input_tensor,y], mode='sum')
+            x = merge([input_tensor,asum(x1,x2)], mode='sum')
             x = Activation('relu')(x)
             return x
     return tmp
@@ -116,12 +125,12 @@ def imagenet():
     x = blocks(x, classes, [3,4,6,3])
     return Model(img_input, x)
 
-def cifar(depth):   
+def cifar(depth,widenFactor=1):   
     assert(((depth - 2) % 6) == 0)
     n = int((depth - 2) / 6)
     classes = 10
     input_shape = (3, 32, 32)
     print(' | ResNet-' + str(depth) + ' CIFAR-10')
     img_input = Input(shape=input_shape)
-    x = blocks(classes, [n,n,n],[16,32,64],branch=2)(img_input)
+    x = blocks(classes, [n,n,n],[16,32*widenFactor,64*widenFactor],branch=2,res=shakeres)(img_input)
     return Model(img_input, x)
